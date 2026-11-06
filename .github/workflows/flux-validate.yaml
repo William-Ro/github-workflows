@@ -1,0 +1,103 @@
+---
+name: Flux Validate
+permissions: { contents: read }
+
+on:
+  workflow_call:
+    inputs:
+      cluster-path:
+        description: Flux entry directory rendered by flate
+        type: string
+        default: .
+      lint-paths:
+        description: Space-separated paths linted by yamllint
+        type: string
+        default: .
+      yamllint-config:
+        description: yamllint config file
+        type: string
+        default: .yamllint.yaml
+      kubernetes-version:
+        description: Kubernetes version kubeconform validates against
+        type: string
+        default: master
+      policy-dir:
+        description: Conftest policy directory; empty skips the policy job
+        type: string
+        default: policy
+      policy-paths:
+        description: Space-separated paths evaluated by conftest
+        type: string
+        default: .
+
+jobs:
+  lint:
+    name: Syntax & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: yamllint
+        run: |
+          pip install --quiet yamllint==1.37.1
+          # shellcheck disable=SC2086 # PATHS is a space-separated list
+          yamllint --strict -c "$CONFIG" $PATHS
+        env:
+          CONFIG: ${{ inputs.yamllint-config }}
+          PATHS: ${{ inputs.lint-paths }}
+
+  validate:
+    name: Validate Manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render and test Flux resources
+        uses: docker://ghcr.io/home-operations/flate:0.6.5
+        with:
+          args: test all -p ${{ inputs.cluster-path }} --no-progress
+
+      - name: Render manifests
+        run: >-
+          docker run --rm -v "$PWD:/github/workspace" -w /github/workspace
+          ghcr.io/home-operations/flate:0.6.5
+          build all -p "$CLUSTER_PATH" --no-progress > rendered.yaml
+        env:
+          CLUSTER_PATH: ${{ inputs.cluster-path }}
+
+      - name: Schema validation
+        uses: docker://ghcr.io/yannh/kubeconform:v0.8.0
+        with:
+          entrypoint: /kubeconform
+          args: >-
+            -summary -ignore-missing-schemas
+            -kubernetes-version ${{ inputs.kubernetes-version }}
+            -schema-location default
+            -schema-location https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+            rendered.yaml
+
+  policy:
+    name: Policy
+    if: inputs.policy-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Policy unit tests
+        uses: docker://openpolicyagent/conftest:v0.71.0
+        with:
+          args: verify --policy ${{ inputs.policy-dir }}
+
+      - name: Policy check
+        uses: docker://openpolicyagent/conftest:v0.71.0
+        with:
+          args: test ${{ inputs.policy-paths }} --policy ${{ inputs.policy-dir }} --all-namespaces
