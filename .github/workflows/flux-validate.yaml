@@ -59,13 +59,18 @@ jobs:
           persist-credentials: false
 
       - name: Render and test Flux resources
-        uses: docker://ghcr.io/home-operations/flate:0.6.5
-        with:
-          args: test all -p ${{ inputs.cluster-path }} --no-progress
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD:/github/workspace" -w /github/workspace
+          ghcr.io/home-operations/flate:0.6.5
+          test all -p "$CLUSTER_PATH" --no-progress
+        env:
+          CLUSTER_PATH: ${{ inputs.cluster-path }}
 
       - name: Render manifests
         run: >-
-          docker run --rm -v "$PWD:/github/workspace" -w /github/workspace
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
+          -v "$PWD:/github/workspace" -w /github/workspace
           ghcr.io/home-operations/flate:0.6.5
           build all -p "$CLUSTER_PATH" --no-progress > rendered.yaml
         env:
